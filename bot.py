@@ -3,7 +3,6 @@ import os
 import time
 from typing import List
 
-from bson import ObjectId
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
 from telegram.constants import ParseMode
 from telegram.ext import (
@@ -36,8 +35,10 @@ from config import (
 	format_uptime,
 	format_bytes,
 	parse_tokens,
+	parse_settemplate_values,
 	check_user_joined,
 	build_join_buttons,
+	add_caption,
 )
 
 from admin import register_admin_handlers
@@ -114,13 +115,12 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 	await update.message.reply_text(
 		"👋 *Auto-Caption Bot*\n\n"
 		"• Envoyez du texte avec `/n`, `/v`, `/l` pour créer des légendes\n"
-		"• Envoyez des fichiers pour publier avec votre légende\n\n"
+		"• Envoyez des fichiers pour générer votre légende\n\n"
 		"*Commandes:*\n"
-		"/setchannel @channel - Définir la chaîne cible\n"
-		"/settemplate - Définir le modèle de légende\n"
+		"/settemplate - Définir la série et l'épisode\n"
 		"/captions - Gérer les légendes\n"
 		"/status - Statistiques du bot\n\n"
-		"*Admin:* /forceon /forceoff /addforce /delforce /forcelist /broadcast",
+		"*Admin:* /forceon /forceoff /addforce /delforce /forcelist",
 		reply_markup=kb_home(),
 		disable_web_page_preview=True,
 		parse_mode=ParseMode.MARKDOWN,
@@ -131,33 +131,9 @@ async def ping_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 	await update.message.reply_text("pong")
 
 
-async def setchannel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-	user_id = update.effective_user.id
-	if not is_admin(user_id):
-		ok, _ = await check_user_joined(context.bot, user_id)
-		if not ok:
-			force = await get_force_config()
-			await update.message.reply_text(
-				"🔒 *Access Restricted*\n\nPlease join the required channels to use this bot.",
-				reply_markup=build_join_buttons(force),
-				disable_web_page_preview=True,
-				parse_mode=ParseMode.MARKDOWN,
-			)
-			return
-	if not context.args:
-		await update.message.reply_text("Usage: `/setchannel @username` ou `/setchannel -1001234567890`", parse_mode=ParseMode.MARKDOWN)
-		return
-	target = context.args[0]
-	try:
-		chat = await context.bot.get_chat(target)
-		await set_user(user_id, channel_id=chat.id)
-		await update.message.reply_text(f"✅ Chaîne définie: `{chat.id}` (ajoutez le bot en admin)", parse_mode=ParseMode.MARKDOWN)
-	except Exception as e:
-		await update.message.reply_text(f"❌ Erreur: `{e}`", parse_mode=ParseMode.MARKDOWN)
-
-
 async def settemplate_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 	user_id = update.effective_user.id
+	# Force-Join si non admin
 	if not is_admin(user_id):
 		ok, _ = await check_user_joined(context.bot, user_id)
 		if not ok:
@@ -169,16 +145,56 @@ async def settemplate_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 				parse_mode=ParseMode.MARKDOWN,
 			)
 			return
-	text = update.message.text or ""
-	parts = text.split(None, 1)
+
+	raw = update.message.text or ""
+
+	# 1) Mode valeurs: "<series> — Episode <ep> — <version> — <lang>"
+	parsed = parse_settemplate_values(raw)
+	if parsed:
+		series, ep, zero_pad, version, lang = parsed
+		# Fixe le modèle standard
+		tpl = "{series} — Episode {ep} — {version} — {lang}"
+		await set_user(user_id, template=tpl)
+		# Crée/active la caption correspondante
+		ok, msg, cid = await add_caption(user_id, series, version, lang)
+		if not ok and cid:
+			pass
+		elif not ok and "existe déjà" in msg:
+			caps = await list_captions(user_id)
+			from config import norm
+			found = next((c for c in caps if norm(c.get("name",""))==norm(series) and norm(c.get("version",""))==norm(version) and norm(c.get("lang",""))==norm(lang)), None)
+			cid = found["_id"] if found else None
+			if not cid:
+				await update.message.reply_text("⚠️ Caption déjà existante mais introuvable. Réessaie.")
+				return
+		elif not ok:
+			await update.message.reply_text(msg)
+			return
+		await set_active_caption_id(user_id, cid)
+		await set_caption_fields(user_id, cid, next_ep=int(ep), zero_pad=int(zero_pad))
+		await update.message.reply_text(
+			"✅ Modèle enregistré **et** légende active préparée.\n"
+			f"• Série : `{series}`\n"
+			f"• Épisode actuel : `{str(ep).zfill(zero_pad)}`\n"
+			f"• Version : `{version or '—'}`\n"
+			f"• Langue : `{lang or '—'}`\n\n"
+			"➡️ Envoie maintenant un fichier pour générer la légende.",
+			parse_mode=ParseMode.MARKDOWN
+		)
+		return
+
+	# 2) Ancien mode: placeholders bruts
+	parts = raw.split(None, 1)
 	if len(parts) < 2:
 		await update.message.reply_text(
-			"Usage:\n`/settemplate {series} — Episode {ep} — {version} — {lang}`\n"
-			"Placeholders: {series}, {ep}, {version}, {lang}",
+			"Usage (valeurs) :\n"
+			"`/settemplate One Piece — Episode 12 — 1080p — VF`\n\n"
+			"Ou (modèle personnalisé avec placeholders) :\n"
+			"`/settemplate {series} — Episode {ep} — {version} — {lang}`",
 			parse_mode=ParseMode.MARKDOWN,
 		)
 		return
-	tpl = parts[1]
+		tpl = parts[1].strip()
 	await set_user(user_id, template=tpl)
 	await update.message.reply_text(f"✅ Modèle sauvegardé:\n`{tpl}`", parse_mode=ParseMode.MARKDOWN)
 
@@ -265,6 +281,7 @@ async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
 	if not update.message or not update.message.document:
 		return
 	user_id = update.effective_user.id
+	# Force-Join si non admin
 	if not is_admin(user_id):
 		ok, _ = await check_user_joined(context.bot, user_id)
 		if not ok:
@@ -276,10 +293,6 @@ async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
 				parse_mode=ParseMode.MARKDOWN,
 			)
 			return
-	u = await get_user(user_id)
-	if not u["channel_id"]:
-		await update.message.reply_text("⚠️ Configurez `/setchannel` d'abord.", parse_mode=ParseMode.MARKDOWN)
-		return
 	cid = await get_active_caption_id(user_id)
 	if not cid:
 		await update.message.reply_text("⚠️ Aucune légende active. Utilisez `/captions`.", parse_mode=ParseMode.MARKDOWN)
@@ -289,21 +302,17 @@ async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
 		await set_active_caption_id(user_id, None)
 		await update.message.reply_text("⚠️ Légende introuvable.")
 		return
+	u = await get_user(user_id)
 	caption = build_caption(
 		u["template"], cap["name"], int(cap.get("next_ep", 1)), int(cap.get("zero_pad", 0)), cap.get("version") or "", cap.get("lang") or ""
 	)
 	try:
-		await context.bot.copy_message(
-			chat_id=u["channel_id"],
-			from_chat_id=update.effective_chat.id,
-			message_id=update.message.message_id,
-			caption=caption,
-		)
 		file_size = update.message.document.file_size or 0
 		await update_stats(files_delta=1, bytes_delta=file_size)
 		await set_caption_fields(user_id, cid, next_ep=int(cap.get("next_ep", 1)) + 1)
 		await update.message.reply_text(
-			f"✅ Publié: {caption}\n➡️ Prochain épisode: {int(cap.get('next_ep', 1))+1}"
+			"✅ Caption générée:\n" f"```\n{caption}\n```\n" f"➡️ Prochain épisode: {int(cap.get('next_ep', 1))+1}",
+			parse_mode=ParseMode.MARKDOWN
 		)
 	except Exception as e:
 		await update.message.reply_text(f"❌ Erreur: `{e}`", parse_mode=ParseMode.MARKDOWN)
@@ -348,8 +357,7 @@ async def post_init(application: Application):
 	# Set bot commands (menu) and print bot identity
 	await application.bot.set_my_commands([
 		BotCommand("start", "Démarrer le bot"),
-		BotCommand("setchannel", "Définir la chaîne cible"),
-		BotCommand("settemplate", "Définir le modèle de légende"),
+		BotCommand("settemplate", "Définir la série et l'épisode"),
 		BotCommand("captions", "Gérer vos légendes"),
 		BotCommand("status", "Voir votre statut"),
 		BotCommand("forceon", "(Admin) Activer force join"),
@@ -357,7 +365,6 @@ async def post_init(application: Application):
 		BotCommand("addforce", "(Admin) Ajouter force channel"),
 		BotCommand("delforce", "(Admin) Supprimer force channel"),
 		BotCommand("forcelist", "(Admin) Lister force channels"),
-		# Broadcast not implemented
 	])
 	me = await application.bot.get_me()
 	print(f"Auto-Caption Bot started as @{me.username} (id={me.id})")
@@ -371,7 +378,6 @@ def main():
 	# Register command handlers
 	application.add_handler(CommandHandler("start", start_cmd))
 	application.add_handler(CommandHandler("ping", ping_cmd))
-	application.add_handler(CommandHandler("setchannel", setchannel_cmd))
 	application.add_handler(CommandHandler("settemplate", settemplate_cmd))
 	application.add_handler(CommandHandler("captions", captions_cmd))
 	application.add_handler(CommandHandler("status", status_cmd))
