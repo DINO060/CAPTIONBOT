@@ -61,3 +61,7 @@ coverage.xml
 config.py
 *.sqlite3
 
+# Sensitive sessions
+*.session
+autocaption-bot.session
+
