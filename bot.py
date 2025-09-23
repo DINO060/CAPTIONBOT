@@ -39,6 +39,7 @@ from config import (
 	check_user_joined,
 	build_join_buttons,
 	add_caption,
+    delete_caption,
 )
 
 from admin import register_admin_handlers
@@ -277,6 +278,82 @@ async def parse_text_for_caption(update: Update, context: ContextTypes.DEFAULT_T
 	)
 
 
+async def open_caption_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+	cq = update.callback_query
+	await cq.answer()
+	uid = cq.from_user.id
+	try:
+		cid = int(cq.data.split(":")[2])
+	except Exception:
+		await cq.message.edit_text("❌ ID invalide.")
+		return
+	cap = await get_caption(uid, cid)
+	if not cap:
+		await cq.message.edit_text("⚠️ Caption introuvable.")
+		return
+	kb = InlineKeyboardMarkup([
+		[InlineKeyboardButton("▶️ Continue", callback_data=f"cap:use:{cid}:cont"), InlineKeyboardButton("🔁 Start Over", callback_data=f"cap:use:{cid}:start")],
+		[InlineKeyboardButton("🗑 Delete", callback_data=f"cap:del:{cid}")],
+		[InlineKeyboardButton("⬅️ Back", callback_data="cap:list:1")],
+	])
+	label = f"**{cap['name']}** — {cap.get('version') or '—'} — {cap.get('lang') or '—'} (next: {cap.get('next_ep',1)})"
+	await cq.message.edit_text(f"📄 {label}", reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
+
+
+async def use_caption_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+	cq = update.callback_query
+	await cq.answer()
+	uid = cq.from_user.id
+	_, _, cid_str, mode = cq.data.split(":")
+	cid = int(cid_str)
+	cap = await get_caption(uid, cid)
+	if not cap:
+		await cq.message.edit_text("⚠️ Caption introuvable.")
+		return
+	if mode == "start":
+		await set_caption_fields(uid, cid, next_ep=1)
+	await set_active_caption_id(uid, cid)
+	await cq.message.edit_text(
+		"✅ Caption activée.\n"
+		f"• **{cap['name']}** — {cap.get('version') or '—'} — {cap.get('lang') or '—'} "
+		f"(next: {cap.get('next_ep',1) if mode!='start' else 1})",
+		parse_mode=ParseMode.MARKDOWN
+	)
+
+
+async def delete_caption_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+	cq = update.callback_query
+	await cq.answer()
+	uid = cq.from_user.id
+	cid = int(cq.data.split(":")[2])
+	act = await get_active_caption_id(uid)
+	if act == cid:
+		await set_active_caption_id(uid, None)
+	ok = await delete_caption(uid, cid)
+	if not ok:
+		await cq.message.edit_text("ℹ️ Rien à supprimer.")
+		return
+	caps = await list_captions(uid)
+	if not caps:
+		await cq.message.edit_text("Liste vide.")
+		return
+	await cq.message.edit_text("🗂 *Caption List*:", reply_markup=kb_list(caps, page=1), parse_mode=ParseMode.MARKDOWN)
+
+
+async def list_captions_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+	cq = update.callback_query
+	await cq.answer()
+	uid = cq.from_user.id
+	try:
+		page = int(cq.data.split(":")[2])
+	except Exception:
+		page = 1
+	caps = await list_captions(uid)
+	if not caps:
+		await cq.message.edit_text("Liste vide.")
+		return
+	await cq.message.edit_text("🗂 *Caption List*:", reply_markup=kb_list(caps, page=page), parse_mode=ParseMode.MARKDOWN)
+
 async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
 	msg = update.message
 	if not msg:
@@ -421,6 +498,10 @@ def main():
 
 	# Callback queries
 	application.add_handler(CallbackQueryHandler(fs_refresh_cb, pattern=r"^fs:refresh$"))
+	application.add_handler(CallbackQueryHandler(list_captions_cb, pattern=r"^cap:list:\d+$"))
+	application.add_handler(CallbackQueryHandler(open_caption_cb, pattern=r"^cap:open:\d+$"))
+	application.add_handler(CallbackQueryHandler(use_caption_cb, pattern=r"^cap:use:\d+:(cont|start)$"))
+	application.add_handler(CallbackQueryHandler(delete_caption_cb, pattern=r"^cap:del:\d+$"))
 
 	# Admin handlers
 	register_admin_handlers(application)
