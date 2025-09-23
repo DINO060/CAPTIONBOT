@@ -60,13 +60,7 @@ def kb_home():
 SET_WAIT_TAG = 9101
 
 def kb_settings_menu(tag: str | None, position: str):
-	tag_display = f"[{tag}]" if tag else "[—]"
-	pos_display = "start" if position == "start" else "end"
 	return InlineKeyboardMarkup([
-		[InlineKeyboardButton("Settings", callback_data="noop")],
-		[InlineKeyboardButton(f"🧷 Hashtag: {tag_display}", callback_data="noop")],
-		[InlineKeyboardButton(f"📍 Position: {pos_display}", callback_data="noop")],
-		[InlineKeyboardButton("Choose an option:", callback_data="noop")],
 		[InlineKeyboardButton("📍 Change Position", callback_data="set:pos")],
 		[InlineKeyboardButton("➕ Add/Edit Hashtag", callback_data="set:add")],
 		[InlineKeyboardButton("🗑 Remove Hashtag", callback_data="set:rm")],
@@ -306,7 +300,13 @@ async def settings_home_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 	uid = cq.from_user.id
 	prefs = await get_user_tag_prefs(uid)
 	kb = kb_settings_menu(prefs["tag"], prefs["position"])
-	await cq.message.edit_text("⚙️ *Settings*", reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
+	info = (
+		"⚙️ *Settings*\n" 
+		f"• Hashtag: `{prefs['tag'] or '—'}`\n" 
+		f"• Position: `{prefs['position']}`\n\n" 
+		"Choisissez une option:"
+	)
+	await cq.message.edit_text(info, reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
 
 
 async def settings_toggle_pos_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
