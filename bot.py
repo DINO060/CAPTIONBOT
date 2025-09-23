@@ -10,6 +10,7 @@ from telegram.ext import (
 	CommandHandler,
 	MessageHandler,
 	CallbackQueryHandler,
+	ConversationHandler,
 	ContextTypes,
 	filters,
 )
@@ -40,6 +41,10 @@ from config import (
 	build_join_buttons,
 	add_caption,
     delete_caption,
+    get_user_tag_prefs,
+    set_user_tag,
+    set_tag_position,
+    apply_tag_to_caption,
 )
 
 from admin import register_admin_handlers
@@ -49,6 +54,23 @@ def kb_home():
 	return InlineKeyboardMarkup([
 		[InlineKeyboardButton("⚙️ Settings", callback_data="set:home"),
 		 InlineKeyboardButton("🗂 Captions", callback_data="cap:list:1")],
+	])
+
+
+SET_WAIT_TAG = 9101
+
+def kb_settings_menu(tag: str | None, position: str):
+	tag_display = f"[{tag}]" if tag else "[—]"
+	pos_display = "start" if position == "start" else "end"
+	return InlineKeyboardMarkup([
+		[InlineKeyboardButton("Settings", callback_data="noop")],
+		[InlineKeyboardButton(f"🧷 Hashtag: {tag_display}", callback_data="noop")],
+		[InlineKeyboardButton(f"📍 Position: {pos_display}", callback_data="noop")],
+		[InlineKeyboardButton("Choose an option:", callback_data="noop")],
+		[InlineKeyboardButton("📍 Change Position", callback_data="set:pos")],
+		[InlineKeyboardButton("➕ Add/Edit Hashtag", callback_data="set:add")],
+		[InlineKeyboardButton("🗑 Remove Hashtag", callback_data="set:rm")],
+		[InlineKeyboardButton("⬅️ Back", callback_data="home")],
 	])
 
 
@@ -278,6 +300,68 @@ async def parse_text_for_caption(update: Update, context: ContextTypes.DEFAULT_T
 	)
 
 
+async def settings_home_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+	cq = update.callback_query
+	await cq.answer()
+	uid = cq.from_user.id
+	prefs = await get_user_tag_prefs(uid)
+	kb = kb_settings_menu(prefs["tag"], prefs["position"])
+	await cq.message.edit_text("⚙️ *Settings*", reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
+
+
+async def settings_toggle_pos_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+	cq = update.callback_query
+	await cq.answer()
+	uid = cq.from_user.id
+	prefs = await get_user_tag_prefs(uid)
+	new_pos = "start" if prefs["position"] == "end" else "end"
+	await set_tag_position(uid, new_pos)
+	prefs = await get_user_tag_prefs(uid)
+	kb = kb_settings_menu(prefs["tag"], prefs["position"])
+	await cq.message.edit_text("⚙️ *Settings*\n✅ Position updated.", reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
+
+
+async def settings_add_hashtag_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+	cq = update.callback_query
+	await cq.answer()
+	await cq.message.edit_text(
+		"✍️ *Send your hashtag/username now.*\n"
+		"Exemples: `@djd208` • `#AnimeClub` • `djd208`",
+		parse_mode=ParseMode.MARKDOWN
+	)
+	return SET_WAIT_TAG
+
+
+async def settings_receive_hashtag(update: Update, context: ContextTypes.DEFAULT_TYPE):
+	uid = update.effective_user.id
+	raw = (update.message.text or "").strip()
+	if not raw:
+		await update.message.reply_text("❌ Empty. Try again or /cancel.")
+		return SET_WAIT_TAG
+	if len(raw) > 64:
+		await update.message.reply_text("⚠️ Too long (max 64 chars). Try again.")
+		return SET_WAIT_TAG
+	await set_user_tag(uid, raw)
+	prefs = await get_user_tag_prefs(uid)
+	kb = kb_settings_menu(prefs["tag"], prefs["position"])
+	await update.message.reply_text("✅ Hashtag saved.", reply_markup=kb)
+	return ConversationHandler.END
+
+
+async def settings_remove_hashtag_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+	cq = update.callback_query
+	await cq.answer()
+	uid = cq.from_user.id
+	await set_user_tag(uid, None)
+	prefs = await get_user_tag_prefs(uid)
+	kb = kb_settings_menu(prefs["tag"], prefs["position"])
+	await cq.message.edit_text("⚙️ *Settings*\n🗑 Hashtag removed.", reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
+
+
+async def noop_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+	await update.callback_query.answer()
+
+
 async def open_caption_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 	cq = update.callback_query
 	await cq.answer()
@@ -396,6 +480,10 @@ async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
 		cap.get("lang") or ""
 	)
 
+	# Appliquer le hashtag/username auto
+	prefs = await get_user_tag_prefs(user_id)
+	caption = apply_tag_to_caption(caption, prefs.get("tag"), prefs.get("position"))
+
 	# Copie le même message dans CE chat avec la caption ajoutée
 	try:
 		await context.bot.copy_message(
@@ -498,10 +586,24 @@ def main():
 
 	# Callback queries
 	application.add_handler(CallbackQueryHandler(fs_refresh_cb, pattern=r"^fs:refresh$"))
+	application.add_handler(CallbackQueryHandler(settings_home_cb, pattern=r"^set:home$"))
+	application.add_handler(CallbackQueryHandler(settings_toggle_pos_cb, pattern=r"^set:pos$"))
+	application.add_handler(CallbackQueryHandler(settings_add_hashtag_cb, pattern=r"^set:add$"))
+	application.add_handler(CallbackQueryHandler(settings_remove_hashtag_cb, pattern=r"^set:rm$"))
+	application.add_handler(CallbackQueryHandler(noop_cb, pattern=r"^noop$"))
 	application.add_handler(CallbackQueryHandler(list_captions_cb, pattern=r"^cap:list:\d+$"))
 	application.add_handler(CallbackQueryHandler(open_caption_cb, pattern=r"^cap:open:\d+$"))
 	application.add_handler(CallbackQueryHandler(use_caption_cb, pattern=r"^cap:use:\d+:(cont|start)$"))
 	application.add_handler(CallbackQueryHandler(delete_caption_cb, pattern=r"^cap:del:\d+$"))
+
+	# Conversation: saisie hashtag
+	application.add_handler(ConversationHandler(
+		entry_points=[CallbackQueryHandler(settings_add_hashtag_cb, pattern=r"^set:add$")],
+		states={
+			SET_WAIT_TAG: [MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & (~filters.COMMAND), settings_receive_hashtag)],
+		},
+		fallbacks=[CommandHandler("cancel", lambda u, c: ConversationHandler.END)],
+	))
 
 	# Admin handlers
 	register_admin_handlers(application)
