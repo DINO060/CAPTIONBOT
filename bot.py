@@ -414,7 +414,7 @@ def main():
 
 	# Message handlers (order matters)
 	application.add_handler(MessageHandler(
-		filters.ChatType.PRIVATE & (filters.Document.ALL | filters.Video | filters.Photo | filters.Animation),
+		filters.ChatType.PRIVATE & (filters.Document.ALL | filters.VIDEO | filters.PHOTO | filters.ANIMATION),
 		on_media
 	))
 	application.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & (~filters.COMMAND), parse_text_for_caption))
