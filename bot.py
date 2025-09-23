@@ -278,44 +278,74 @@ async def parse_text_for_caption(update: Update, context: ContextTypes.DEFAULT_T
 
 
 async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
-	if not update.message or not update.message.document:
+	msg = update.message
+	if not msg:
 		return
+
 	user_id = update.effective_user.id
+
 	# Force-Join si non admin
 	if not is_admin(user_id):
 		ok, _ = await check_user_joined(context.bot, user_id)
 		if not ok:
 			force = await get_force_config()
-			await update.message.reply_text(
+			await msg.reply_text(
 				"🔒 *Access Restricted*\n\nPlease join the required channels to use this bot.",
 				reply_markup=build_join_buttons(force),
 				disable_web_page_preview=True,
 				parse_mode=ParseMode.MARKDOWN,
 			)
 			return
+
+	# Légende active requise
 	cid = await get_active_caption_id(user_id)
 	if not cid:
-		await update.message.reply_text("⚠️ Aucune légende active. Utilisez `/captions`.", parse_mode=ParseMode.MARKDOWN)
+		await msg.reply_text("⚠️ Aucune légende active. Utilisez `/captions`.", parse_mode=ParseMode.MARKDOWN)
 		return
+
 	cap = await get_caption(user_id, cid)
 	if not cap:
 		await set_active_caption_id(user_id, None)
-		await update.message.reply_text("⚠️ Légende introuvable.")
+		await msg.reply_text("⚠️ Légende introuvable.")
 		return
+
 	u = await get_user(user_id)
 	caption = build_caption(
-		u["template"], cap["name"], int(cap.get("next_ep", 1)), int(cap.get("zero_pad", 0)), cap.get("version") or "", cap.get("lang") or ""
+		u["template"],
+		cap["name"],
+		int(cap.get("next_ep", 1)),
+		int(cap.get("zero_pad", 0)),
+		cap.get("version") or "",
+		cap.get("lang") or ""
 	)
+
+	# Copie le même message dans CE chat avec la caption ajoutée
 	try:
-		file_size = update.message.document.file_size or 0
+		await context.bot.copy_message(
+			chat_id=msg.chat_id,
+			from_chat_id=msg.chat_id,
+			message_id=msg.message_id,
+			caption=caption
+		)
+
+		# Stats & incrément de l'épisode
+		file_size = (
+			(msg.document and msg.document.file_size) or
+			(msg.video and msg.video.file_size) or
+			(msg.animation and msg.animation.file_size) or
+			(msg.photo and msg.photo[-1].file_size) or
+			0
+		)
 		await update_stats(files_delta=1, bytes_delta=file_size)
 		await set_caption_fields(user_id, cid, next_ep=int(cap.get("next_ep", 1)) + 1)
-		await update.message.reply_text(
-			"✅ Caption générée:\n" f"```\n{caption}\n```\n" f"➡️ Prochain épisode: {int(cap.get('next_ep', 1))+1}",
-			parse_mode=ParseMode.MARKDOWN
+
+		# (Optionnel) accusé texte
+		await msg.reply_text(
+			f"✅ Légende ajoutée.\n➡️ Prochain épisode: {int(cap.get('next_ep', 1))+1}"
 		)
+
 	except Exception as e:
-		await update.message.reply_text(f"❌ Erreur: `{e}`", parse_mode=ParseMode.MARKDOWN)
+		await msg.reply_text(f"❌ Erreur: `{e}`", parse_mode=ParseMode.MARKDOWN)
 
 
 async def fs_refresh_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -383,7 +413,10 @@ def main():
 	application.add_handler(CommandHandler("status", status_cmd))
 
 	# Message handlers (order matters)
-	application.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.Document.ALL, on_media))
+	application.add_handler(MessageHandler(
+		filters.ChatType.PRIVATE & (filters.Document.ALL | filters.Video | filters.Photo | filters.Animation),
+		on_media
+	))
 	application.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & (~filters.COMMAND), parse_text_for_caption))
 
 	# Callback queries
