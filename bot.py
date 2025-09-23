@@ -141,7 +141,6 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 		print(f"get_user failed: {e}")
 	await update.message.reply_text(
 		"👋 *Auto-Caption Bot*\n\n"
-		"• Send text with `/n`, `/v`, `/l` to create captions\n"
 		"• Send files to generate your caption\n\n"
 		"*Commands:*\n"
 		"/settemplate - Set series and episode\n"
@@ -241,7 +240,7 @@ async def captions_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 			return
 	caps = await list_captions(user_id)
 	if not caps:
-		await update.message.reply_text("Empty list. Send text with `/n`, `/v`, `/l`.", parse_mode=ParseMode.MARKDOWN)
+		await update.message.reply_text("Empty list. Use /settemplate to create a caption.")
 		return
 	await update.message.reply_text("🗂 *Caption List*:", reply_markup=kb_list(caps, page=1), parse_mode=ParseMode.MARKDOWN)
 
@@ -324,7 +323,6 @@ async def home_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 	await cq.answer()
 	text = (
 		"👋 *Auto-Caption Bot*\n\n"
-		"• Send text with `/n`, `/v`, `/l` to create captions\n"
 		"• Send files to generate your caption\n\n"
 		"*Commands:*\n"
 		"/settemplate - Set series and episode\n"
