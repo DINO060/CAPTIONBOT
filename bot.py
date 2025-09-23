@@ -194,7 +194,7 @@ async def settemplate_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 			parse_mode=ParseMode.MARKDOWN,
 		)
 		return
-		tpl = parts[1].strip()
+	tpl = parts[1].strip()
 	await set_user(user_id, template=tpl)
 	await update.message.reply_text(f"✅ Modèle sauvegardé:\n`{tpl}`", parse_mode=ParseMode.MARKDOWN)
 
