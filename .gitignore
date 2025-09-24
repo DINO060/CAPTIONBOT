@@ -58,7 +58,6 @@ Thumbs.db
 coverage.xml
 
 # Project specific
-config.py
 *.sqlite3
 *.db
 
