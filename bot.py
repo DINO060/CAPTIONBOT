@@ -53,16 +53,17 @@ from config import (
 	clear_multi,
 	toggle_multi_id,
 	advance_multi_pointer,
+	HELP_URL,
 )
 
 from admin import register_admin_handlers
 
 
 def kb_home():
-	return InlineKeyboardMarkup([
-		[InlineKeyboardButton("⚙️ Settings", callback_data="set:home"),
-		 InlineKeyboardButton("🗂 Captions", callback_data="cap:list:1")],
-	])
+	rows = [[InlineKeyboardButton("⚙️ Settings", callback_data="set:home"), InlineKeyboardButton("🗂 Captions", callback_data="cap:list:1")]]
+	if HELP_URL:
+		rows.append([InlineKeyboardButton("📘 Guide (Telegraph)", url=HELP_URL)])
+	return InlineKeyboardMarkup(rows)
 
 
 SET_WAIT_TAG = 9101
@@ -139,14 +140,18 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 		await get_user(user_id)
 	except Exception as e:
 		print(f"get_user failed: {e}")
-	await update.message.reply_text(
+	text = (
 		"👋 *Auto-Caption Bot*\n\n"
 		"• Send files to generate your caption\n\n"
 		"*Commands:*\n"
 		"/settemplate - Set series and episode\n"
 		"/captions - Manage captions\n"
-		"/status - Bot stats\n\n"
-		"*Admin:* /forceon /forceoff /addforce /delforce /forcelist",
+		"/status - Bot stats\n"
+	)
+	text += "/help - Help / Guide\n"
+	text += "\n*Admin:* /forceon /forceoff /addforce /delforce /forcelist"
+	await update.message.reply_text(
+		text,
 		reply_markup=kb_home(),
 		disable_web_page_preview=True,
 		parse_mode=ParseMode.MARKDOWN,
@@ -327,9 +332,10 @@ async def home_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 		"*Commands:*\n"
 		"/settemplate - Set series and episode\n"
 		"/captions - Manage captions\n"
-		"/status - Bot stats\n\n"
-		"*Admin:* /forceon /forceoff /addforce /delforce /forcelist"
+		"/status - Bot stats\n"
 	)
+	text += "/help - Help / Guide\n"
+	text += "\n*Admin:* /forceon /forceoff /addforce /delforce /forcelist"
 	await cq.message.edit_text(text, reply_markup=kb_home(), disable_web_page_preview=True, parse_mode=ParseMode.MARKDOWN)
 
 
@@ -698,17 +704,21 @@ async def echo_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def post_init(application: Application):
 	# Set bot commands (menu) and print bot identity
-	await application.bot.set_my_commands([
+	cmds = [
 		BotCommand("start", "Start the bot"),
 		BotCommand("settemplate", "Set series and episode"),
 		BotCommand("captions", "Manage your captions"),
 		BotCommand("status", "View your status"),
+	]
+	cmds.append(BotCommand("help", "Show help/guide"))
+	cmds += [
 		BotCommand("forceon", "(Admin) Enable force join"),
 		BotCommand("forceoff", "(Admin) Disable force join"),
 		BotCommand("addforce", "(Admin) Add force channel"),
 		BotCommand("delforce", "(Admin) Delete force channel"),
 		BotCommand("forcelist", "(Admin) List force channels"),
-	])
+	]
+	await application.bot.set_my_commands(cmds)
 	me = await application.bot.get_me()
 	print(f"Auto-Caption Bot started as @{me.username} (id={me.id})")
 
@@ -724,6 +734,21 @@ def main():
 	application.add_handler(CommandHandler("settemplate", settemplate_cmd))
 	application.add_handler(CommandHandler("captions", captions_cmd))
 	application.add_handler(CommandHandler("status", status_cmd))
+	async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+		if HELP_URL:
+			kb = InlineKeyboardMarkup([[InlineKeyboardButton(text="📘 Full Guide (Telegraph)", url=HELP_URL)]])
+			text = (
+				"<b>Auto-Caption Bot — Help</b>\n\n"
+				"Create a template with /settemplate, then send files to publish.\n"
+				"Tap the button below for the full guide."
+			)
+			await update.message.reply_html(text, reply_markup=kb, disable_web_page_preview=True)
+		else:
+			await update.message.reply_text(
+				"Help: Use /settemplate to set your template, then send files here.\n"
+				"Commands: /settemplate, /captions, /status, /help"
+			)
+	application.add_handler(CommandHandler("help", help_cmd))
 
 	# Conversation: saisie hashtag (register early so state handlers take precedence)
 	application.add_handler(ConversationHandler(
