@@ -1,7 +1,7 @@
 import os, re, json, time
 import aiosqlite
 from typing import Optional, List, Tuple
-from datetime import datetime
+from datetime import datetime, timedelta
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.constants import ChatMemberStatus
 from dotenv import load_dotenv
@@ -21,9 +21,14 @@ DEFAULT_TEMPLATE = "{series} Episode {ep}  {version}  {lang}"
 START_TIME = time.time()
 
 # -----------------------------
-# Global connection
+# Global connection & cache
 # -----------------------------
 _db: aiosqlite.Connection | None = None
+
+# Force-join cache: {user_id: (is_joined: bool, timestamp: float)}
+# Cache expires after 5 minutes
+_force_join_cache: dict[int, tuple[bool, float]] = {}
+FORCE_JOIN_CACHE_TTL = 300  # 5 minutes in seconds
 
 async def init_db():
     global _db
@@ -36,7 +41,8 @@ async def init_db():
         CREATE TABLE IF NOT EXISTS users (
             user_id     INTEGER PRIMARY KEY,
             template    TEXT DEFAULT '{template}',
-            joined_date TEXT
+            joined_date TEXT,
+            last_activity TEXT
         );
 
         CREATE TABLE IF NOT EXISTS state (
@@ -147,12 +153,36 @@ async def remove_force_channel(chat_id: int):
     ch = (await cur.fetchone())["ch"]
     return ch > 0
 
-async def check_user_joined(bot, user_id: int) -> Tuple[bool, list]:
+async def check_user_joined(bot, user_id: int, use_cache: bool = True) -> Tuple[bool, list]:
+    """
+    Check if user has joined all required channels.
+
+    Args:
+        bot: Telegram bot instance
+        user_id: User ID to check
+        use_cache: If True, use cached result if available and not expired
+
+    Returns:
+        Tuple of (is_joined: bool, missing_channels: list)
+    """
+    global _force_join_cache
+
     force = await get_force_config()
     if not force.get("enabled"):
         return True, []
     if is_admin(user_id):
         return True, []
+
+    # Check cache first
+    if use_cache and user_id in _force_join_cache:
+        is_joined, timestamp = _force_join_cache[user_id]
+        if time.time() - timestamp < FORCE_JOIN_CACHE_TTL:
+            # Cache is still valid
+            if is_joined:
+                return True, []
+            # If cached as not joined, we still recheck (user might have joined)
+
+    # Perform actual check
     missing = []
     for ch in force.get("channels", []):
         cid = ch.get("chat_id")
@@ -164,7 +194,20 @@ async def check_user_joined(bot, user_id: int) -> Tuple[bool, list]:
                 missing.append(ch)
         except Exception:
             missing.append(ch)
-    return (len(missing) == 0), missing
+
+    # Update cache
+    is_joined = len(missing) == 0
+    _force_join_cache[user_id] = (is_joined, time.time())
+
+    return is_joined, missing
+
+def clear_force_join_cache(user_id: Optional[int] = None):
+    """Clear force-join cache for a specific user or all users"""
+    global _force_join_cache
+    if user_id is not None:
+        _force_join_cache.pop(user_id, None)
+    else:
+        _force_join_cache.clear()
 
 def build_join_buttons(force_cfg: dict) -> InlineKeyboardMarkup:
     btns = []
@@ -197,18 +240,75 @@ async def get_stats() -> dict:
 
 async def track_user(user_id: int):
     # upsert
+    now = datetime.now().isoformat(timespec="seconds")
     cur = await _db.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
     row = await cur.fetchone()
     if not row:
         await _db.execute(
-            "INSERT INTO users(user_id, template, joined_date) VALUES(?,?,?)",
-            (user_id, DEFAULT_TEMPLATE, datetime.now().isoformat(timespec="seconds"))
+            "INSERT INTO users(user_id, template, joined_date, last_activity) VALUES(?,?,?,?)",
+            (user_id, DEFAULT_TEMPLATE, now, now)
         )
-        await _db.commit()
+    else:
+        await _db.execute(
+            "UPDATE users SET last_activity = ? WHERE user_id = ?",
+            (now, user_id)
+        )
+    await _db.commit()
 
 async def get_total_users() -> int:
     cur = await _db.execute("SELECT COUNT(*) AS c FROM users")
     return (await cur.fetchone())["c"]
+
+async def get_user_stats() -> dict:
+    """Get detailed user activity statistics"""
+    from datetime import datetime, timedelta
+
+    now = datetime.now()
+    one_hour_ago = (now - timedelta(hours=1)).isoformat(timespec="seconds")
+    one_day_ago = (now - timedelta(days=1)).isoformat(timespec="seconds")
+    seven_days_ago = (now - timedelta(days=7)).isoformat(timespec="seconds")
+
+    # Total users
+    cur = await _db.execute("SELECT COUNT(*) AS c FROM users")
+    total = (await cur.fetchone())["c"]
+
+    # Active in last hour
+    cur = await _db.execute(
+        "SELECT COUNT(*) AS c FROM users WHERE last_activity >= ?",
+        (one_hour_ago,)
+    )
+    active_1h = (await cur.fetchone())["c"]
+
+    # Active in last 24 hours
+    cur = await _db.execute(
+        "SELECT COUNT(*) AS c FROM users WHERE last_activity >= ?",
+        (one_day_ago,)
+    )
+    active_24h = (await cur.fetchone())["c"]
+
+    # Active in last 7 days
+    cur = await _db.execute(
+        "SELECT COUNT(*) AS c FROM users WHERE last_activity >= ?",
+        (seven_days_ago,)
+    )
+    active_7d = (await cur.fetchone())["c"]
+
+    # Inactive (7+ days)
+    inactive = total - active_7d
+
+    return {
+        "total": total,
+        "active_1h": active_1h,
+        "active_24h": active_24h,
+        "active_7d": active_7d,
+        "inactive_7d": inactive
+    }
+
+async def get_all_user_ids() -> List[int]:
+    """Get all user IDs for broadcast"""
+    cur = await _db.execute("SELECT user_id FROM users")
+    rows = await cur.fetchall()
+    return [row["user_id"] for row in rows]
 
 # -----------------------------
 # Utils

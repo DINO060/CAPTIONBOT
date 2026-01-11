@@ -32,6 +32,8 @@ from config import (
 	set_caption_fields,
 	update_stats,
 	get_total_users,
+	get_user_stats,
+	get_all_user_ids,
 	get_stats,
 	get_force_config,
 	format_uptime,
@@ -39,6 +41,7 @@ from config import (
 	parse_tokens,
 	parse_settemplate_values,
 	check_user_joined,
+	clear_force_join_cache,
 	build_join_buttons,
 	add_caption,
     delete_caption,
@@ -149,7 +152,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 		"/status - Bot stats\n"
 	)
 	text += "/help - Help / Guide\n"
-	text += "\n*Admin:* /forceon /forceoff /addforce /delforce /forcelist"
+	text += "\n*Admin:* /forceon /forceoff /addforce /delforce /forcelist /broadcast"
 	await update.message.reply_text(
 		text,
 		reply_markup=kb_home(),
@@ -261,14 +264,20 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 		"• Active: " + (f"**{cap['name']}** — {cap.get('version') or '—'} — {cap.get('lang') or '—'} (next: {cap.get('next_ep', 1)})" if cap else "none"),
 	]
 	if is_admin(user_id):
-		total_users = await get_total_users()
+		user_stats = await get_user_stats()
 		force = await get_force_config()
 		stats = await get_stats()
 		uptime = format_uptime(time.time() - START_TIME)
 		parts += [
 			"",
-			"🛡 *Global*",
-			f"• Users: {total_users}",
+			"👥 *Users:*",
+			f"• Total: {user_stats['total']}",
+			f"• Active (1 hour): {user_stats['active_1h']}",
+			f"• Active (24 hours): {user_stats['active_24h']}",
+			f"• Active (7 days): {user_stats['active_7d']}",
+			f"• Inactive (7+ days): {user_stats['inactive_7d']}",
+			"",
+			"🛡 *System*",
 			f"• Files: {stats['files']}",
 			f"• Storage: {format_bytes(stats['storage_bytes'])}",
 			f"• Force: {'ON' if force.get('enabled') else 'OFF'} ({len(force.get('channels', []))})",
@@ -335,7 +344,7 @@ async def home_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 		"/status - Bot stats\n"
 	)
 	text += "/help - Help / Guide\n"
-	text += "\n*Admin:* /forceon /forceoff /addforce /delforce /forcelist"
+	text += "\n*Admin:* /forceon /forceoff /addforce /delforce /forcelist /broadcast"
 	await cq.message.edit_text(text, reply_markup=kb_home(), disable_web_page_preview=True, parse_mode=ParseMode.MARKDOWN)
 
 
@@ -672,7 +681,9 @@ async def fs_refresh_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 		return
 	cq = update.callback_query
 	uid = cq.from_user.id
-	ok, _ = await check_user_joined(context.bot, uid)
+	# Clear cache to force fresh check
+	clear_force_join_cache(uid)
+	ok, _ = await check_user_joined(context.bot, uid, use_cache=False)
 	if ok:
 		await cq.message.edit_text("✅ Access granted!")
 	else:
@@ -717,6 +728,7 @@ async def post_init(application: Application):
 		BotCommand("addforce", "(Admin) Add force channel"),
 		BotCommand("delforce", "(Admin) Delete force channel"),
 		BotCommand("forcelist", "(Admin) List force channels"),
+		BotCommand("broadcast", "(Admin) Broadcast message to all users"),
 	]
 	await application.bot.set_my_commands(cmds)
 	me = await application.bot.get_me()
