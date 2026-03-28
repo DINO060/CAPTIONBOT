@@ -1,6 +1,6 @@
 # 🚀 GUIDE DE DÉPLOIEMENT - SERVEUR CONTABO
 
-## 📍 Tu es connecté à : `root@vmi2736931`
+## 📍 Tu es connecté à : `root@<hostname_serveur>`
 
 ---
 
@@ -63,7 +63,7 @@ git pull origin main
 **Option B : Via SCP depuis ton PC**
 Ouvre un **nouveau terminal PowerShell sur Windows** :
 ```powershell
-scp -r "C:\Users\djohn\Downloads\UPLOADERBOT\BOBOTBOY\CAPTIONBOT\*" root@vmi2736931.contaboserver.net:~/CAPTIONBOT/
+scp -r "C:\chemin\vers\CAPTIONBOT\*" root@<ip_ou_hostname_serveur>:~/CAPTIONBOT/
 ```
 
 **Option C : Via SFTP/FileZilla**
@@ -101,17 +101,17 @@ cat .env
 
 Assure-toi que le fichier contient :
 ```
-BOT_TOKEN=8487001863:AAH9Ah05GpIwP6zT3dJGeP6oxc3CFYFsxtE
-ADMIN_IDS=7570539064,7615697178
-HELP_URL=https://telegra.ph/Auto-Caption-Bot-09-24
+BOT_TOKEN=<ton_token_botfather>
+ADMIN_IDS=<ton_user_id>,<autre_admin_id>
+HELP_URL=<lien_telegra.ph_optionnel>
 ```
 
 Si le fichier n'existe pas ou est incorrect, crée-le :
 ```bash
 cat > .env << 'EOF'
-BOT_TOKEN=8487001863:AAH9Ah05GpIwP6zT3dJGeP6oxc3CFYFsxtE
-ADMIN_IDS=7570539064,7615697178
-HELP_URL=https://telegra.ph/Auto-Caption-Bot-09-24
+BOT_TOKEN=<ton_token_botfather>
+ADMIN_IDS=<ton_user_id>
+HELP_URL=
 EOF
 ```
 
@@ -184,7 +184,7 @@ journalctl -u captionbot -f
 
 Tu devrais voir :
 ```
-Auto-Caption Bot started as @auttocaptionbot (id=8487001863)
+Auto-Caption Bot started as @<nom_du_bot>
 ```
 
 ### Sur Telegram :

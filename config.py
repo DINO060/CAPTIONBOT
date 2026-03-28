@@ -376,9 +376,23 @@ def parse_settemplate_values(text: str):
         version = segs[2].strip()
         lang = segs[3].strip()
         return series, ep, zero_pad, version, lang
+    if len(segs) == 3:
+        series = segs[0].strip()
+        ep_raw = segs[1].strip()
+        m = EP_EXTRACT.search(ep_raw)
+        if not m:
+            return None
+        ep_str = m.group(1)
+        zero_pad = len(ep_str) if ep_str.startswith("0") else 0
+        try:
+            ep = int(ep_str)
+        except ValueError:
+            return None
+        version = segs[2].strip()
+        return series, ep, zero_pad, version, ""
 
-    # 2) Variant: space separators (supports "Episode", "EP", or "E")
-    m2 = re.match(r"^(?P<series>.+?)\s*(?:—|-)?\s*(?:Episode|EP|E)\s*(?P<ep>\d+)\s*(?:—|-)?\s*(?P<version>\S+)\s*(?:—|-)?\s*(?P<lang>\S+)\s*$", args, re.IGNORECASE)
+    # 2) Variant: space separators (supports "Episode", "EP", or "E") — lang is optional
+    m2 = re.match(r"^(?P<series>.+?)\s*(?:—|-)?\s*(?:Episode|EP|E)\s*(?P<ep>\d+)\s*(?:—|-)?\s*(?P<version>\S+)(?:\s*(?:—|-)?\s*(?P<lang>\S+))?\s*$", args, re.IGNORECASE)
     if not m2:
         return None
     series = m2.group("series").strip()
@@ -389,7 +403,7 @@ def parse_settemplate_values(text: str):
     except ValueError:
         return None
     version = m2.group("version").strip()
-    lang = m2.group("lang").strip()
+    lang = (m2.group("lang") or "").strip()
     return series, ep, zero_pad, version, lang
 
 def build_caption(template: str, series: str, ep: int, zero_pad: int, version: str, lang: str) -> str:
