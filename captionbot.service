@@ -1,0 +1,18 @@
+[Unit]
+Description=Auto-Caption Telegram Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/CAPTIONBOT
+ExecStart=/root/CAPTIONBOT/venv/bin/python /root/CAPTIONBOT/bot.py
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=0
+StandardOutput=append:/root/CAPTIONBOT/bot.log
+StandardError=append:/root/CAPTIONBOT/bot.log
+
+[Install]
+WantedBy=multi-user.target
