@@ -1,4 +1,4 @@
-import os, re, json, time
+import os, re, json, time, html
 import aiosqlite
 from typing import Optional, List, Tuple
 from datetime import datetime, timedelta
@@ -81,7 +81,8 @@ async def init_db():
         CREATE TABLE IF NOT EXISTS user_prefs (
             user_id    INTEGER PRIMARY KEY,
             tag        TEXT,
-            position   TEXT DEFAULT 'end'
+            position   TEXT DEFAULT 'end',
+            ep_from_name INTEGER NOT NULL DEFAULT 1
         );
 
         -- Multi-caption state (selection & pointer)
@@ -93,6 +94,13 @@ async def init_db():
         );
         """.replace("{template}", DEFAULT_TEMPLATE.replace("'", "''"))
     )
+
+    # Columns added after the first release
+    cur = await _db.execute("PRAGMA table_info(user_prefs)")
+    pref_columns = {row[1] for row in await cur.fetchall()}
+    if "ep_from_name" not in pref_columns:
+        # 1: the episode number comes from the file name when it has one ("- 03", "S02E03"); 0: the counter
+        await _db.execute("ALTER TABLE user_prefs ADD COLUMN ep_from_name INTEGER NOT NULL DEFAULT 1")
 
     # Default values
     await _set_setting_default("force_enabled", "0")  # 0=OFF, 1=ON
@@ -540,7 +548,8 @@ async def add_caption(user_id: int, name: str, version: Optional[str], lang: Opt
         await _db.commit()
         cur = await _db.execute("SELECT last_insert_rowid() AS lid")
         lid = (await cur.fetchone())["lid"]
-        return True, f"✅ Caption saved: **{name}** — {version or '—'} — {lang or '—'}", int(lid)
+        return True, (f"✅ Caption saved: <b>{html.escape(name)}</b> — {html.escape(version or '—')} — "
+                      f"{html.escape(lang or '—')}"), int(lid)
     except aiosqlite.IntegrityError:
         # If it already exists, fetch and return its id
         cur = await _db.execute(
@@ -615,12 +624,44 @@ async def _set_setting(key: str, val: str):
 # User tag preferences
 # -----------------------------
 async def get_user_tag_prefs(user_id: int) -> dict:
-    cur = await _db.execute("SELECT tag, position FROM user_prefs WHERE user_id = ?", (user_id,))
+    cur = await _db.execute("SELECT tag, position, ep_from_name FROM user_prefs WHERE user_id = ?", (user_id,))
     row = await cur.fetchone()
     if not row:
-        return {"tag": None, "position": "end"}
+        return {"tag": None, "position": "end", "ep_from_name": True}
     pos = row["position"] if row["position"] in ("start", "end") else "end"
-    return {"tag": row["tag"], "position": pos}
+    return {"tag": row["tag"], "position": pos, "ep_from_name": bool(row["ep_from_name"])}
+
+
+async def set_ep_from_name(user_id: int, on: bool):
+    await _db.execute(
+        "INSERT INTO user_prefs(user_id, ep_from_name) VALUES(?, ?) "
+        "ON CONFLICT(user_id) DO UPDATE SET ep_from_name=excluded.ep_from_name",
+        (user_id, 1 if on else 0)
+    )
+    await _db.commit()
+
+
+# The episode in a file name: "[Erai-raws] Ao no Hako - 03 [1080p].mkv", "Blue.Box.S02E03.mkv", "EP1120"
+_EP_IN_NAME = [
+    (re.compile(r"\bs(\d{1,2})\s?e(\d{1,4})\b", re.I), 2),                    # S02E03
+    (re.compile(r"\b(?:[ée]pisode|episode|[ée]p)\s*#?(\d{1,4})\b", re.I), 1),  # Episode 3, EP 03, EP1120
+    (re.compile(r"\s[-–—]\s*(\d{1,4})(?:v\d)?(?=\s|$)"), 1),                   # "Title - 03"
+    (re.compile(r"\be(\d{1,4})\b", re.I), 1),                                  # E03
+    (re.compile(r"\s(0\d{1,3})(?=\s|$)"), 1),                                  # "Title 03" (zero-padded only)
+]
+
+
+def episode_in_name(name: Optional[str]) -> Optional[int]:
+    """The episode number a file name gives, or None (a year, a resolution or a title number isn't one)."""
+    stem = re.sub(r"\.[A-Za-z0-9]{2,4}$", "", name or "")
+    stem = re.sub(r"\[[^\]]*\]|\([^)]*\)|\{[^}]*\}", " ", stem)        # [1080p] (2024) {group}
+    text = " " + re.sub(r"\s+", " ", re.sub(r"[._]+", " ", stem)).strip() + " "
+    for regex, group in _EP_IN_NAME:
+        m = regex.search(text)
+        if m:
+            n = int(m.group(group))
+            return n if n > 0 else None
+    return None
 
 async def set_user_tag(user_id: int, tag: Optional[str]):
     tag = (tag or "").strip()
