@@ -1,0 +1,9 @@
+# What's new, newest version on top. At start-up, a version not announced yet is sent once to every user.
+# A version line is "== <version> ==", then one "- " line per change, in English, short.
+# To announce an update: add a new block at the top. A restart without a new block tells users nothing.
+
+== 2026-10-19 ==
+- Files over 20 MB get their new name too (up to 2 GB), and every file comes back in the order you sent it.
+- The episode number can come from the file name (« - 03 », « S02E03 », « EP12 »): Settings → Episode.
+- Choosing one caption (Continue / Start Over) now turns multi-caption off.
+- A new guide with pictures and a short video: /help

@@ -5,8 +5,9 @@ import tempfile
 import time
 from typing import List
 
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand, InputFile
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand, InputFile, BotCommandScopeChat
 from telegram.constants import ParseMode
+from telegram.error import Forbidden, RetryAfter
 from telegram.ext import (
 	Application,
 	CommandHandler,
@@ -59,7 +60,9 @@ from config import (
 	clear_multi,
 	toggle_multi_id,
 	advance_multi_pointer,
-	HELP_URL,
+	get_admin_ids,
+	channel_problem,
+	channel_label,
 )
 
 import big_files
@@ -75,6 +78,19 @@ def cap_label(cap: dict) -> str:
 			f"(next: {cap.get('next_ep', 1)})")
 
 
+def btn(text: str, data: str = None, url: str = None, style: str = None) -> InlineKeyboardButton:
+	"""A button, coloured where Telegram allows it (Bot API 9.4): 'success' green, 'primary' blue, 'danger' red.
+	An older Telegram app shows a plain one."""
+	extra = {"api_kwargs": {"style": style}} if style else {}
+	if url:
+		return InlineKeyboardButton(text, url=url, **extra)
+	return InlineKeyboardButton(text, callback_data=data, **extra)
+
+
+# The Telegraph guide (guide/telegraph_pages.py), English and French
+GUIDE_EN = "https://telegra.ph/Auto-Caption-Bot--How-to-use-it-10-19"
+GUIDE_FR = "https://telegra.ph/Auto-Caption-Bot--Mode-demploi-10-19"
+
 ACCESS_RESTRICTED = "🔒 <b>Access Restricted</b>\n\nPlease join the required channels to use this bot."
 HOME_TEXT = (
 	"👋 <b>Auto-Caption Bot</b>\n\n"
@@ -83,28 +99,33 @@ HOME_TEXT = (
 	"/settemplate - Set series and episode\n"
 	"/captions - Manage captions\n"
 	"/status - Bot stats\n"
-	"/help - Help / Guide\n"
-	"\n<b>Admin:</b> /forceon /forceoff /addforce /delforce /forcelist /broadcast"
+	"/help - How to use the bot (guide with pictures) 📖\n"
 )
+ADMIN_LINE = "\n<b>Admin:</b> /forceon /forceoff /addforce /delforce /forcelist /broadcast"
+
+
+def home_text(user_id: int) -> str:
+	"""The welcome; the admin commands only for admins (every user saw them)."""
+	return HOME_TEXT + (ADMIN_LINE if is_admin(user_id) else "")
 
 
 def kb_home():
-	rows = [[InlineKeyboardButton("⚙️ Settings", callback_data="set:home"), InlineKeyboardButton("🗂 Captions", callback_data="cap:list:1")]]
-	if HELP_URL:
-		rows.append([InlineKeyboardButton("📘 Guide (Telegraph)", url=HELP_URL)])
-	return InlineKeyboardMarkup(rows)
+	return InlineKeyboardMarkup([
+		[btn("⚙️ Settings", "set:home", style="primary"), btn("🗂 Captions", "cap:list:1", style="success")],
+		[btn("📖 Guide", url=GUIDE_EN), btn("📖 Mode d'emploi", url=GUIDE_FR)],
+	])
 
 
 SET_WAIT_TAG = 9101
 
 def kb_settings_menu(prefs: dict):
 	return InlineKeyboardMarkup([
-		[InlineKeyboardButton("📍 Change Position", callback_data="set:pos")],
-		[InlineKeyboardButton("➕ Add/Edit Hashtag", callback_data="set:add")],
-		[InlineKeyboardButton("🗑 Remove Hashtag", callback_data="set:rm")],
-		[InlineKeyboardButton("🔢 Episode: " + ("from file name ✅" if prefs.get("ep_from_name", True) else "counter only"),
-							  callback_data="set:epn")],
-		[InlineKeyboardButton("⬅️ Back", callback_data="home")],
+		[btn("📍 Change Position", "set:pos", style="primary")],
+		[btn("➕ Add/Edit Hashtag", "set:add", style="success")],
+		[btn("🗑 Remove Hashtag", "set:rm", style="danger")],
+		[btn("🔢 Episode: " + ("from file name ✅" if prefs.get("ep_from_name", True) else "counter only"), "set:epn",
+			 style="primary")],
+		[btn("⬅️ Back", "home")],
 	])
 
 
@@ -123,10 +144,10 @@ def settings_text(prefs: dict, note: str = "") -> str:
 def kb_caption_actions(cid, name: str, next_ep: int):
 	cid_hex = str(cid)
 	return InlineKeyboardMarkup([
-		[InlineKeyboardButton("▶️ Continue", callback_data=f"cap:use:{cid_hex}:cont"),
-		 InlineKeyboardButton("🔁 Start Over", callback_data=f"cap:use:{cid_hex}:start")],
-		[InlineKeyboardButton("🗑 Delete", callback_data=f"cap:del:{cid_hex}")],
-		[InlineKeyboardButton("⬅️ Back", callback_data="cap:list:1")]
+		[btn("▶️ Continue", f"cap:use:{cid_hex}:cont", style="success"),
+		 btn("🔁 Start Over", f"cap:use:{cid_hex}:start", style="primary")],
+		[btn("🗑 Delete", f"cap:del:{cid_hex}", style="danger")],
+		[btn("⬅️ Back", "cap:list:1")]
 	])
 
 
@@ -187,7 +208,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 		await get_user(user_id)
 	except Exception as e:
 		print(f"get_user failed: {e}")
-	await update.message.reply_text(HOME_TEXT, reply_markup=kb_home(), disable_web_page_preview=True, parse_mode=H)
+	await update.message.reply_text(home_text(user_id), reply_markup=kb_home(), disable_web_page_preview=True, parse_mode=H)
 
 
 async def ping_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -322,7 +343,7 @@ async def settings_home_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def home_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 	cq = update.callback_query
 	await cq.answer()
-	await cq.message.edit_text(HOME_TEXT, reply_markup=kb_home(), disable_web_page_preview=True, parse_mode=H)
+	await cq.message.edit_text(home_text(cq.from_user.id), reply_markup=kb_home(), disable_web_page_preview=True, parse_mode=H)
 
 
 async def settings_toggle_pos_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -421,6 +442,7 @@ async def use_caption_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 		await set_caption_fields(uid, cid, next_ep=1)
 		cap["next_ep"] = 1
 	await set_active_caption_id(uid, cid)
+	await set_multi_enabled(uid, False)     # one caption chosen: multi-caption off (it kept going and won)
 	await cq.message.edit_text(f"✅ Caption activated.\n• {cap_label(cap)}", parse_mode=H)
 
 
@@ -495,7 +517,7 @@ async def mc_list_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 	if nav:
 		rows.append(nav)
 
-	rows.append([InlineKeyboardButton("🧹 Clear", callback_data="mc:clear"), InlineKeyboardButton("▶️ Start", callback_data="mc:start")])
+	rows.append([btn("🧹 Clear", "mc:clear", style="danger"), btn("▶️ Start", "mc:start", style="success")])
 	rows.append([InlineKeyboardButton("⬅️ Back", callback_data="cap:list:1")])
 
 	txt = f"🎯 <b>Multi-select</b>\nSelect 2 to 10 captions.\nSelected: {len(selected)}"
@@ -522,15 +544,15 @@ async def mc_clear_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def mc_start_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-	cq = update.callback_query; await cq.answer()
+	cq = update.callback_query
 	uid = cq.from_user.id
 	st = await get_multi_state(uid)
 	n = len(st["ids"])
 	if n < 2 or n > 10:
+		# one answer only: a second one is refused by Telegram (this alert never showed)
 		await cq.answer("Choose between 2 and 10 captions.", show_alert=True)
-		cq.data = "mc:list:1"
-		await mc_list_cb(update, context)
 		return
+	await cq.answer()
 	await set_multi_enabled(uid, True)
 	await set_active_caption_id(uid, None)
 	await cq.message.edit_text(f"✅ Multi-caption <b>enabled</b> ({n} selected). Send your files.", parse_mode=H)
@@ -737,7 +759,8 @@ async def fs_refresh_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 	clear_force_join_cache(uid)
 	ok, _ = await check_user_joined(context.bot, uid, use_cache=False)
 	if ok:
-		await cq.message.edit_text("✅ Access granted!")
+		await cq.message.edit_text("✅ <b>Access granted!</b>\n\n" + home_text(uid), reply_markup=kb_home(),
+								   disable_web_page_preview=True, parse_mode=H)
 	else:
 		force = await get_force_config()
 		await cq.message.edit_text(
@@ -765,44 +788,136 @@ async def echo_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
 		pass
 
 
+USER_COMMANDS = [
+	BotCommand("start", "Start the bot"),
+	BotCommand("settemplate", "Set series and episode"),
+	BotCommand("captions", "Manage your captions"),
+	BotCommand("status", "View your status"),
+	BotCommand("help", "How to use the bot (guide)"),
+]
+ADMIN_COMMANDS = [
+	BotCommand("forceon", "(Admin) Enable force join"),
+	BotCommand("forceoff", "(Admin) Disable force join"),
+	BotCommand("addforce", "(Admin) Add force channel"),
+	BotCommand("delforce", "(Admin) Delete force channel"),
+	BotCommand("forcelist", "(Admin) List force channels"),
+	BotCommand("broadcast", "(Admin) Broadcast message to all users"),
+]
+
+
 async def post_init(application: Application):
-	# Set bot commands (menu) and print bot identity
-	cmds = [
-		BotCommand("start", "Start the bot"),
-		BotCommand("settemplate", "Set series and episode"),
-		BotCommand("captions", "Manage your captions"),
-		BotCommand("status", "View your status"),
-	]
-	cmds.append(BotCommand("help", "Show help/guide"))
-	cmds += [
-		BotCommand("forceon", "(Admin) Enable force join"),
-		BotCommand("forceoff", "(Admin) Disable force join"),
-		BotCommand("addforce", "(Admin) Add force channel"),
-		BotCommand("delforce", "(Admin) Delete force channel"),
-		BotCommand("forcelist", "(Admin) List force channels"),
-		BotCommand("broadcast", "(Admin) Broadcast message to all users"),
-	]
-	await application.bot.set_my_commands(cmds)
+	# The command menu: the admin commands only in the admins' chats (every user saw them)
+	await application.bot.set_my_commands(USER_COMMANDS)
+	for admin in get_admin_ids():
+		try:
+			await application.bot.set_my_commands(USER_COMMANDS + ADMIN_COMMANDS, scope=BotCommandScopeChat(admin))
+		except Exception as e:
+			print(f"admin commands for {admin}: {e}")
 	me = await application.bot.get_me()
 	print(f"Auto-Caption Bot started as @{me.username} (id={me.id})")
 	print("Big files (over 20 MB): " + ("renamed through MTProto" if big_files.available()
 										 else "caption only — set API_ID / API_HASH to rename them"))
+	application.create_task(announce_update(application.bot))
+
+
+# What's new: whatsnew.txt, newest version on top. A version not announced yet is sent once to every user at
+# start-up; a plain restart (crash, deploy without a new entry) tells users nothing, only the admins.
+HERE = os.path.dirname(os.path.abspath(__file__))
+WHATS_NEW_FILE = os.path.join(HERE, "whatsnew.txt")
+ANNOUNCED_FILE = os.path.join(HERE, "data", "announced_version.txt")
+
+
+def whats_new():
+	"""(version, [changes]) of the newest entry of whatsnew.txt, or (None, [])."""
+	try:
+		with open(WHATS_NEW_FILE, encoding="utf-8") as f:
+			lines = f.read().splitlines()
+	except OSError:
+		return None, []
+	version, changes = None, []
+	for line in lines:
+		s = line.strip()
+		if s.startswith("==") and s.endswith("=="):
+			if version:
+				break
+			version = s.strip("= ").strip()
+		elif version and s.startswith("- "):
+			changes.append(s[2:].strip())
+	return version, changes
+
+
+def update_message(changes) -> str:
+	return ("🆕 <b>Auto-Caption Bot has been updated!</b>\n\n<b>What's new:</b>\n"
+			+ "\n".join(f"• {esc(c)}" for c in changes)
+			+ f"\n\n📖 <a href=\"{GUIDE_EN}\">How to use the bot</a> · <a href=\"{GUIDE_FR}\">Mode d'emploi</a>")
+
+
+async def send_to_all(bot, user_ids, text: str) -> dict:
+	"""One message to each user, paced; a flood wait is waited for."""
+	counts = {"sent": 0, "blocked": 0, "failed": 0}
+	for uid in user_ids:
+		for attempt in range(2):
+			try:
+				await bot.send_message(uid, text, parse_mode=H, disable_web_page_preview=True)
+				counts["sent"] += 1
+				break
+			except RetryAfter as e:
+				wait = getattr(e, "retry_after", 5)
+				wait = wait.total_seconds() if hasattr(wait, "total_seconds") else float(wait)
+				if attempt or wait > 300:
+					counts["failed"] += 1
+					break
+				await asyncio.sleep(wait + 1)
+			except Forbidden:
+				counts["blocked"] += 1
+				break
+			except Exception as e:
+				counts["blocked" if "deactivated" in str(e).lower() else "failed"] += 1
+				break
+		await asyncio.sleep(0.05)
+	return counts
+
+
+async def announce_update(bot):
+	"""At start-up: a new version is announced to every user once; the admins hear of every restart, with the
+	state of force join and of big files."""
+	await asyncio.sleep(5)
+	version, changes = whats_new()
+	try:
+		with open(ANNOUNCED_FILE, encoding="utf-8") as f:
+			announced = f.read().strip()
+	except OSError:
+		announced = None
+	counts = None
+	if version and changes and version != announced:
+		os.makedirs(os.path.dirname(ANNOUNCED_FILE), exist_ok=True)
+		with open(ANNOUNCED_FILE, "w", encoding="utf-8") as f:     # first: a crash midway never sends it twice
+			f.write(version)
+		counts = await send_to_all(bot, await get_all_user_ids(), update_message(changes))
+	note = [f"🔄 <b>Auto-Caption Bot restarted</b> (version {esc(version or '?')})."]
+	note.append(f"🆕 Update announced: {counts['sent']} sent, {counts['blocked']} blocked, {counts['failed']} failed."
+				if counts else "No new version: users were not told.")
+	force = await get_force_config()
+	note.append(f"📢 Force join: {'ON' if force.get('enabled') else 'OFF'}")
+	for ch in force.get("channels", []):
+		problem = await channel_problem(bot, ch["chat_id"])
+		note.append(f"   • {esc(channel_label(ch))}: " + ("✅ checked" if not problem else f"❌ NOT checked ({esc(problem)})"))
+	note.append("📦 Big files (over 20 MB): " + ("renamed ✅" if big_files.available()
+												else "caption only ❌ (API_ID / API_HASH missing in .env)"))
+	for admin in get_admin_ids():
+		try:
+			await bot.send_message(admin, "\n".join(note), parse_mode=H)
+		except Exception as e:
+			print(f"restart note to {admin}: {e}")
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-	if HELP_URL:
-		kb = InlineKeyboardMarkup([[InlineKeyboardButton(text="📘 Full Guide (Telegraph)", url=HELP_URL)]])
-		text = (
-			"<b>Auto-Caption Bot — Help</b>\n\n"
-			"Create a template with /settemplate, then send files to publish.\n"
-			"Tap the button below for the full guide."
-		)
-		await update.message.reply_html(text, reply_markup=kb, disable_web_page_preview=True)
-	else:
-		await update.message.reply_text(
-			"Help: Use /settemplate to set your template, then send files here.\n"
-			"Commands: /settemplate, /captions, /status, /help"
-		)
+	"""The guide, with pictures and a short video, in English and French."""
+	await update.message.reply_text(
+		"📖 <b>How to use Auto-Caption Bot</b>\n\nEverything the bot does, step by step, with pictures and a short video.",
+		parse_mode=H, disable_web_page_preview=True,
+		reply_markup=InlineKeyboardMarkup([[btn("📖 Guide (English)", url=GUIDE_EN)],
+										   [btn("📖 Mode d'emploi (Français)", url=GUIDE_FR)]]))
 
 
 def build_application() -> Application:
@@ -815,6 +930,9 @@ def build_application() -> Application:
 	application.add_handler(CommandHandler("captions", captions_cmd))
 	application.add_handler(CommandHandler("status", status_cmd))
 	application.add_handler(CommandHandler("help", help_cmd))
+	# "/n Name /v 1080p /l VF": Telegram takes "/n" for a command, and the text handler skips commands —
+	# this short way to make a caption never reached the bot
+	application.add_handler(CommandHandler("n", parse_text_for_caption))
 
 	# Conversation: saisie hashtag (register early so state handlers take precedence)
 	application.add_handler(ConversationHandler(

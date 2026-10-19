@@ -13,6 +13,9 @@ from config import (
 	remove_force_channel,
 	is_admin,
 	get_all_user_ids,
+	channel_problem,
+	channel_label,
+	clear_force_join_cache,
 )
 
 H = ParseMode.HTML
@@ -34,7 +37,14 @@ def register_admin_handlers(application: Application):
 		force = await get_force_config()
 		force["enabled"] = True
 		await set_force_config(force)
-		await update.message.reply_text("✅ Force Join: <b>ON</b>", parse_mode=H)
+		clear_force_join_cache()
+		warnings = []
+		for ch in force.get("channels", []):
+			problem = await channel_problem(context.bot, ch["chat_id"])
+			if problem:
+				warnings.append(f"⚠️ {html.escape(channel_label(ch))}: NOT checked ({html.escape(problem)})")
+		await update.message.reply_text("✅ Force Join: <b>ON</b>" + ("\n\n" + "\n".join(warnings) +
+										"\nMake me an administrator there." if warnings else ""), parse_mode=H)
 
 	async def forceoff_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 		if not await admin_only(update):
@@ -52,10 +62,12 @@ def register_admin_handlers(application: Application):
 			await update.message.reply_text("Empty list.")
 			return
 		lines = []
-		for ch in force["channels"]:
-			name = ch.get('title') or ch.get('username') or ch.get('chat_id')
-			lines.append(f"• {html.escape(str(name))} (<code>{ch.get('chat_id')}</code>)")
-		await update.message.reply_text("📋 <b>Force Channels:</b>\n" + "\n".join(lines), parse_mode=H)
+		for ch in force["channels"]:                  # can the bot really check each one? (it must be an admin)
+			problem = await channel_problem(context.bot, ch["chat_id"])
+			state = "✅ checked" if not problem else f"❌ NOT checked: {html.escape(problem)}"
+			lines.append(f"• {html.escape(channel_label(ch))} (<code>{ch.get('chat_id')}</code>) — {state}")
+		head = f"📋 <b>Force Channels</b> (force join {'ON' if force.get('enabled') else 'OFF'}):\n"
+		await update.message.reply_text(head + "\n".join(lines), parse_mode=H)
 
 	async def addforce_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 		if not await admin_only(update):

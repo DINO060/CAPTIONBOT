@@ -65,3 +65,6 @@ coverage.xml
 *.session
 autocaption-bot.session
 
+
+# the last version announced to users (whatsnew.txt), per server
+data/announced_version.txt

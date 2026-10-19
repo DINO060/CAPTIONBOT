@@ -190,7 +190,9 @@ async def check_user_joined(bot, user_id: int, use_cache: bool = True) -> Tuple[
                 return True, []
             # If cached as not joined, we still recheck (user might have joined)
 
-    # Perform actual check
+    # Perform actual check. A channel the bot can't check (not an admin there, wrong id, kicked) used to count as
+    # « not joined » for EVERYONE: all users locked out, silently. Now they pass and the admins are told.
+    from telegram.error import BadRequest, Forbidden, NetworkError
     missing = []
     for ch in force.get("channels", []):
         cid = ch.get("chat_id")
@@ -198,16 +200,61 @@ async def check_user_joined(bot, user_id: int, use_cache: bool = True) -> Tuple[
             continue
         try:
             member = await bot.get_chat_member(cid, user_id)
-            if member.status not in (ChatMemberStatus.OWNER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.MEMBER):
+            joined = member.status in (ChatMemberStatus.OWNER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.MEMBER) \
+                or (member.status == ChatMemberStatus.RESTRICTED and getattr(member, "is_member", False))
+            if not joined:
                 missing.append(ch)
-        except Exception:
-            missing.append(ch)
+        except BadRequest as e:
+            if any(k in str(e).lower() for k in ("user not found", "participant_id_invalid", "user_not_participant")):
+                missing.append(ch)
+            else:
+                await _alert_admins(bot, ch, str(e))
+        except Forbidden as e:
+            await _alert_admins(bot, ch, str(e))
+        except NetworkError as e:                        # Telegram unreachable for a moment: let them through
+            print(f"force join check {cid}: {e}")
+        except Exception as e:
+            print(f"force join check {cid}: {e}")
 
     # Update cache
     is_joined = len(missing) == 0
     _force_join_cache[user_id] = (is_joined, time.time())
 
     return is_joined, missing
+
+
+CONFIG_ALERT_EVERY = 6 * 3600       # a channel the bot can't check is reported to the admins this often
+_alerted_at: dict = {}
+
+
+def channel_label(ch: dict) -> str:
+    return ch.get("title") or (f"@{ch['username']}" if ch.get("username") else str(ch.get("chat_id")))
+
+
+async def _alert_admins(bot, ch: dict, why: str) -> None:
+    key = ch.get("chat_id")
+    if time.time() - _alerted_at.get(key, 0) < CONFIG_ALERT_EVERY:
+        return
+    _alerted_at[key] = time.time()
+    text = (f"⚠️ <b>Force join:</b> I can't check who is in {html.escape(channel_label(ch))} ({html.escape(why)}).\n\n"
+            "Until this is fixed, users are NOT checked for this channel.\n"
+            "Fix: make this bot an administrator of the channel, then /forcelist to verify.")
+    for admin in get_admin_ids():
+        try:
+            await bot.send_message(admin, text, parse_mode="HTML")
+        except Exception as e:
+            print(f"force join alert to {admin}: {e}")
+
+
+async def channel_problem(bot, chat_id) -> Optional[str]:
+    """None when the bot can check this channel's members (it must be an admin there), else why not."""
+    try:
+        me = await bot.get_chat_member(chat_id, bot.id)
+        if me.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER):
+            return None
+        return "I'm not an administrator there"
+    except Exception as e:
+        return str(e) or type(e).__name__
 
 def clear_force_join_cache(user_id: Optional[int] = None):
     """Clear force-join cache for a specific user or all users"""
@@ -227,8 +274,8 @@ def build_join_buttons(force_cfg: dict) -> InlineKeyboardMarkup:
         elif ch.get("invite_link"):
             url = ch["invite_link"]
         if url:
-            btns.append([InlineKeyboardButton(f"➕ Join • {label}", url=url)])
-    btns.append([InlineKeyboardButton("🔄 I have joined", callback_data="fs:refresh")])
+            btns.append([InlineKeyboardButton(f"➕ Join • {label}", url=url, api_kwargs={"style": "primary"})])
+    btns.append([InlineKeyboardButton("🔄 I have joined", callback_data="fs:refresh", api_kwargs={"style": "success"})])
     return InlineKeyboardMarkup(btns)
 
 # -----------------------------
