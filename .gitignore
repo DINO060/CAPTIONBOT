@@ -68,3 +68,5 @@ autocaption-bot.session
 
 # the last version announced to users (whatsnew.txt), per server
 data/announced_version.txt
+# the update notices waiting to be deleted
+data/update_messages.json

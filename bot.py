@@ -1,5 +1,6 @@
 import asyncio
 import html
+import json
 import os
 import tempfile
 import time
@@ -818,6 +819,7 @@ async def post_init(application: Application):
 	print("Big files (over 20 MB): " + ("renamed through MTProto" if big_files.available()
 										 else "caption only — set API_ID / API_HASH to rename them"))
 	application.create_task(announce_update(application.bot))
+	application.create_task(update_cleanup_loop(application.bot))    # the notice deleted after UPDATE_MESSAGE_TTL
 
 
 # What's new: whatsnew.txt, newest version on top. A version not announced yet is sent once to every user at
@@ -825,6 +827,47 @@ async def post_init(application: Application):
 HERE = os.path.dirname(os.path.abspath(__file__))
 WHATS_NEW_FILE = os.path.join(HERE, "whatsnew.txt")
 ANNOUNCED_FILE = os.path.join(HERE, "data", "announced_version.txt")
+# The update notice deletes itself after a while (the owner's wish), even across a restart: what is due is on disk
+UPDATE_MESSAGE_TTL = 6 * 3600
+UPDATE_MESSAGES_FILE = os.path.join(HERE, "data", "update_messages.json")
+
+
+def _pending_updates() -> list:
+	try:
+		with open(UPDATE_MESSAGES_FILE, encoding="utf-8") as f:
+			return json.load(f)
+	except (OSError, ValueError):
+		return []
+
+
+def _save_pending_updates(rows: list) -> None:
+	os.makedirs(os.path.dirname(UPDATE_MESSAGES_FILE), exist_ok=True)
+	with open(UPDATE_MESSAGES_FILE, "w", encoding="utf-8") as f:
+		json.dump(rows, f)
+
+
+async def delete_due_updates(bot) -> int:
+	"""Deletes the update notices whose time is up; returns how many."""
+	now = time.time()
+	due = [r for r in _pending_updates() if r[2] <= now]
+	for chat_id, msg_id, _ in due:
+		try:
+			await bot.delete_message(chat_id, msg_id)
+		except Exception as e:
+			print(f"update notice {chat_id}/{msg_id} not deleted: {e}")
+		await asyncio.sleep(0.05)
+	if due:          # read again: notices sent meanwhile are kept
+		_save_pending_updates([r for r in _pending_updates() if r[2] > now])
+	return len(due)
+
+
+async def update_cleanup_loop(bot):
+	while True:
+		try:
+			await delete_due_updates(bot)
+		except Exception as e:
+			print(f"update notice cleanup: {e}")
+		await asyncio.sleep(60)
 
 
 def whats_new():
@@ -849,17 +892,20 @@ def whats_new():
 def update_message(changes) -> str:
 	return ("🆕 <b>Auto-Caption Bot has been updated!</b>\n\n<b>What's new:</b>\n"
 			+ "\n".join(f"• {esc(c)}" for c in changes)
-			+ f"\n\n📖 <a href=\"{GUIDE_EN}\">How to use the bot</a> · <a href=\"{GUIDE_FR}\">Mode d'emploi</a>")
+			+ f"\n\n📖 <a href=\"{GUIDE_EN}\">How to use the bot</a> · <a href=\"{GUIDE_FR}\">Mode d'emploi</a>"
+			+ f"\n\n<i>🕒 This message disappears in {UPDATE_MESSAGE_TTL // 3600} h.</i>")
 
 
-async def send_to_all(bot, user_ids, text: str) -> dict:
-	"""One message to each user, paced; a flood wait is waited for."""
+async def send_to_all(bot, user_ids, text: str, sent: list = None) -> dict:
+	"""One message to each user, paced; a flood wait is waited for. sent: gets (user, message id) of each."""
 	counts = {"sent": 0, "blocked": 0, "failed": 0}
 	for uid in user_ids:
 		for attempt in range(2):
 			try:
-				await bot.send_message(uid, text, parse_mode=H, disable_web_page_preview=True)
+				msg = await bot.send_message(uid, text, parse_mode=H, disable_web_page_preview=True)
 				counts["sent"] += 1
+				if sent is not None and msg is not None:
+					sent.append((uid, msg.message_id))
 				break
 			except RetryAfter as e:
 				wait = getattr(e, "retry_after", 5)
@@ -893,7 +939,10 @@ async def announce_update(bot):
 		os.makedirs(os.path.dirname(ANNOUNCED_FILE), exist_ok=True)
 		with open(ANNOUNCED_FILE, "w", encoding="utf-8") as f:     # first: a crash midway never sends it twice
 			f.write(version)
-		counts = await send_to_all(bot, await get_all_user_ids(), update_message(changes))
+		sent = []
+		counts = await send_to_all(bot, await get_all_user_ids(), update_message(changes), sent)
+		delete_at = time.time() + UPDATE_MESSAGE_TTL
+		_save_pending_updates(_pending_updates() + [[uid, mid, delete_at] for uid, mid in sent])
 	note = [f"🔄 <b>Auto-Caption Bot restarted</b> (version {esc(version or '?')})."]
 	note.append(f"🆕 Update announced: {counts['sent']} sent, {counts['blocked']} blocked, {counts['failed']} failed."
 				if counts else "No new version: users were not told.")

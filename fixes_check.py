@@ -26,6 +26,7 @@ import config  # noqa: E402
 import bot as acb  # noqa: E402
 
 acb.ANNOUNCED_FILE = str(WORK / "data" / "announced_version.txt")
+acb.UPDATE_MESSAGES_FILE = str(WORK / "data" / "update_messages.json")
 ok = True
 
 
@@ -58,7 +59,10 @@ class FakeBot:
 
     async def send_message(self, chat_id, text, **kw):
         self.log.append(("msg", chat_id, text, kw.get("reply_markup")))
-        return Msg(owner=self, chat_id=chat_id)
+        return Msg(owner=self, chat_id=chat_id, message_id=len(self.log))
+
+    async def delete_message(self, chat_id, message_id):
+        self.log.append(("deleted", chat_id, str(message_id), None))
 
     async def set_my_commands(self, commands, scope=None, **kw):
         self.commands.append(([c.command for c in commands], getattr(scope, "chat_id", None)))
@@ -161,7 +165,8 @@ async def main():
           "help" in default and "forceon" not in default and "forceon" in admin, str(bot.commands))
 
     # 5. the update notice (started by post_init)
-    await asyncio.gather(*tasks)
+    await tasks[0]                       # the notice; tasks[1] is the deletion loop (forever)
+    tasks[1].cancel()
     news = [e for e in bot.log if e[0] == "msg" and "has been updated" in e[2]]
     note = [e for e in bot.log if e[0] == "msg" and e[1] == 42 and "restarted" in e[2]]
     check("a new version: every user told once, with what's new and the guide (EN + FR)",
@@ -170,6 +175,17 @@ async def main():
     check("… the admin's restart note: force join per channel and big files",
           note and "Channel A: ✅ checked" in note[-1][2] and "Private B: ❌ NOT checked" in note[-1][2]
           and "Big files" in note[-1][2], note and note[-1][2])
+    import time  # noqa: PLC0415
+    pending = acb._pending_updates()
+    check("the update notice: each one due for deletion in 6 h (on disk, a restart doesn't lose it)",
+          sorted(r[0] for r in pending) == [42, 50, 51, 52] and all(5.9 * 3600 < r[2] - time.time() <= 6 * 3600 for r in pending)
+          and "disappears in 6 h" in news[0][2], str(pending))
+    check("… not deleted before its time", await acb.delete_due_updates(bot) == 0)
+    acb._save_pending_updates([[c, m, time.time() - 1] for c, m, _ in pending])      # 6 h later
+    mark = len(bot.log)
+    n = await acb.delete_due_updates(bot)
+    check("… after 6 h: deleted for every user, nothing left", n == 4 and sorted(e[1] for e in bot.log[mark:] if e[0] == "deleted")
+          == [42, 50, 51, 52] and acb._pending_updates() == [])
     mark = len(bot.log)
     await acb.announce_update(bot)
     check("… restarted again, no new version: users told nothing, the admin still told",
