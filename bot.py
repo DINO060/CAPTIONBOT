@@ -369,20 +369,42 @@ async def settings_toggle_epn_cb(update: Update, context: ContextTypes.DEFAULT_T
 							   parse_mode=H)
 
 
+TAG_WAIT = 300   # « Add/Edit Hashtag » waits this long for the hashtag; a text sent later is not one
+
+
 async def settings_add_hashtag_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 	cq = update.callback_query
 	await cq.answer()
+	context.user_data["tag_wait_since"] = time.time()
 	await cq.message.edit_text(
-		"✍️ <b>Send your hashtag/username now.</b>\n"
+		"✍️ <b>Send your hashtag/username now</b> (within 5 min).\n"
 		"Examples: <code>@djd208</code> • <code>#AnimeClub</code> • <code>djd208</code>",
-		parse_mode=H
+		parse_mode=H,
+		reply_markup=InlineKeyboardMarkup([[btn("❌ Cancel", "set:tagcancel", style="danger")]]),
 	)
 	return SET_WAIT_TAG
+
+
+async def settings_cancel_hashtag_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+	"""❌ Cancel of the hashtag request: back to the settings, nothing changed."""
+	cq = update.callback_query
+	await cq.answer()
+	context.user_data.pop("tag_wait_since", None)
+	prefs = await get_user_tag_prefs(cq.from_user.id)
+	await cq.message.edit_text(settings_text(prefs, "Hashtag unchanged."), reply_markup=kb_settings_menu(prefs), parse_mode=H)
+	return ConversationHandler.END
 
 
 async def settings_receive_hashtag(update: Update, context: ContextTypes.DEFAULT_TYPE):
 	uid = update.effective_user.id
 	raw = (update.message.text or "").strip()
+	since = context.user_data.get("tag_wait_since")
+	if since is None or time.time() - since > TAG_WAIT:
+		# asked long ago (or before a restart): this text is not the hashtag — it used to replace it silently
+		# (a caption typed hours later became the hashtag). Handled as any other text instead.
+		context.user_data.pop("tag_wait_since", None)
+		await parse_text_for_caption(update, context)
+		return ConversationHandler.END
 	try:
 		print(f"[wait_tag] from {uid}: '{raw}'")
 	except Exception:
@@ -394,6 +416,7 @@ async def settings_receive_hashtag(update: Update, context: ContextTypes.DEFAULT
 		await update.message.reply_text("⚠️ Too long (max 64 chars). Try again.")
 		return SET_WAIT_TAG
 	await set_user_tag(uid, raw)
+	context.user_data.pop("tag_wait_since", None)
 	prefs = await get_user_tag_prefs(uid)
 	await update.message.reply_text("✅ Hashtag saved.", reply_markup=kb_settings_menu(prefs))
 	return ConversationHandler.END
@@ -989,7 +1012,8 @@ def build_application() -> Application:
 		states={
 			SET_WAIT_TAG: [MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & (~filters.COMMAND), settings_receive_hashtag)],
 		},
-		fallbacks=[CommandHandler("cancel", lambda u, c: ConversationHandler.END)],
+		fallbacks=[CallbackQueryHandler(settings_cancel_hashtag_cb, pattern=r"^set:tagcancel$"),
+		           CommandHandler("cancel", lambda u, c: ConversationHandler.END)],
 	))
 
 	# Message handlers (order matters)
@@ -1005,6 +1029,8 @@ def build_application() -> Application:
 	application.add_handler(CallbackQueryHandler(settings_toggle_pos_cb, pattern=r"^set:pos$"))
 	application.add_handler(CallbackQueryHandler(settings_toggle_epn_cb, pattern=r"^set:epn$"))
 	application.add_handler(CallbackQueryHandler(settings_remove_hashtag_cb, pattern=r"^set:rm$"))
+	# ❌ Cancel of the hashtag request after a restart (the conversation, in memory, is gone)
+	application.add_handler(CallbackQueryHandler(settings_cancel_hashtag_cb, pattern=r"^set:tagcancel$"))
 	application.add_handler(CallbackQueryHandler(home_cb, pattern=r"^home$"))
 	application.add_handler(CallbackQueryHandler(noop_cb, pattern=r"^noop$"))
 	application.add_handler(CallbackQueryHandler(list_captions_cb, pattern=r"^cap:list:\d+$"))

@@ -211,6 +211,39 @@ async def main():
     check("coloured buttons: Continue green, Start Over blue, Delete red",
           styles.get("▶️ Continue") == "success" and styles.get("🔁 Start Over") == "primary"
           and styles.get("🗑 Delete") == "danger", str(styles))
+
+    # 8. the hashtag request: 5 min, ❌ Cancel; a text sent long after is not taken for the hashtag
+    import time as _time
+    ctx8 = SimpleNamespace(bot=bot, user_data={})
+    upd, _ = callback(53, "set:add")
+    state = await acb.settings_add_hashtag_cb(upd, ctx8)
+    prompt = last(53)
+    check("« Add/Edit Hashtag »: within 5 min, with ❌ Cancel", state == acb.SET_WAIT_TAG and "5 min" in prompt[2]
+          and [b.callback_data for b in buttons(prompt[3])] == ["set:tagcancel"], str(prompt))
+    end = await acb.settings_receive_hashtag(command(53, "@MyChan"), ctx8)
+    check("… answered in time: the hashtag saved", end == acb.ConversationHandler.END
+          and (await acb.get_user_tag_prefs(53))["tag"] == "@MyChan")
+    await acb.settings_add_hashtag_cb(callback(53, "set:add")[0], ctx8)
+    ctx8.user_data["tag_wait_since"] = _time.time() - 400          # forgotten: a caption typed 7 min later
+    handled, real = [], acb.parse_text_for_caption
+
+    async def as_text(update, context):
+        handled.append(update.message.text)
+    acb.parse_text_for_caption = as_text
+    end = await acb.settings_receive_hashtag(command(53, "Blue Horizon — Episode 1 — 1080p — VF"), ctx8)
+    acb.parse_text_for_caption = real
+    check("… a text sent after 5 min: NOT the hashtag (it silently replaced it), handled as any text",
+          end == acb.ConversationHandler.END and (await acb.get_user_tag_prefs(53))["tag"] == "@MyChan"
+          and handled == ["Blue Horizon — Episode 1 — 1080p — VF"], str(handled))
+    await acb.settings_add_hashtag_cb(callback(53, "set:add")[0], ctx8)
+    upd, answers = callback(53, "set:tagcancel")
+    end = await acb.settings_cancel_hashtag_cb(upd, ctx8)
+    check("… ❌ Cancel: back to the settings, nothing changed", end == acb.ConversationHandler.END
+          and "Hashtag unchanged" in last(53)[2] and "tag_wait_since" not in ctx8.user_data
+          and (await acb.get_user_tag_prefs(53))["tag"] == "@MyChan")
+    cancels = [h for g in app_real.handlers.values() for h in g if type(h).__name__ == "CallbackQueryHandler"
+               and getattr(h.pattern, "pattern", "") == "^set:tagcancel$"]
+    check("… ❌ Cancel answers even after a restart (outside the conversation too)", len(cancels) == 1, str(cancels))
     print("\nALL OK" if ok else "\nFAILED")
 
 

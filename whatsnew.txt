@@ -2,6 +2,9 @@
 # A version line is "== <version> ==", then one "- " line per change, in English, short.
 # To announce an update: add a new block at the top. A restart without a new block tells users nothing.
 
+== 2026-10-20 ==
+- ✍️ Add/Edit Hashtag now waits 5 min, with ❌ Cancel: a text sent later is no longer taken for your hashtag.
+
 == 2026-10-19 ==
 - Files over 20 MB get their new name too (up to 2 GB), and every file comes back in the order you sent it.
 - The episode number can come from the file name (« - 03 », « S02E03 », « EP12 »): Settings → Episode.
