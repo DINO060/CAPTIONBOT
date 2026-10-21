@@ -2,6 +2,9 @@
 # A version line is "== <version> ==", then one "- " line per change, in English, short.
 # To announce an update: add a new block at the top. A restart without a new block tells users nothing.
 
+== 2026-10-21 ==
+- 🔢 When the episode number comes from the file name and not your counter, the summary says so, with « Always use my counter ».
+
 == 2026-10-20 ==
 - ✍️ Add/Edit Hashtag now waits 5 min, with ❌ Cancel: a text sent later is no longer taken for your hashtag.
 
