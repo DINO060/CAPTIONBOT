@@ -64,6 +64,7 @@ class FakeBot:
     async def send_message(self, chat_id, text, **kw):
         m = Sent(chat_id=chat_id, text=text, kw=kw)
         self.log.append(("msg", chat_id, text, kw.get("parse_mode")))
+        self.markups = getattr(self, "markups", []) + [kw.get("reply_markup")]
         return m
 
 
@@ -150,6 +151,33 @@ async def main():
     cap = await config.get_caption(7, await config.get_active_caption_id(7))
     check("file name 07 → episode 7; then the counter goes on (8); an old one (03) keeps the counter",
           eps == ["7", "8", "3"] and cap["next_ep"] == 9, f"{eps} next={cap['next_ep']}")
+    s, markup = summaries(7)[-1], bot.markups[-1]
+    check("… the summary says 2 numbers came from the file names, with « Always use my counter »",
+          "2 episode numbers were read from the file names" in s and markup is not None
+          and markup.inline_keyboard[0][0].callback_data == "set:epn0", s)
+
+    # 4b. the reported case: counter at 12, a file named "…-vf-ep01" → Episode 1, and the summary says why
+    cid7 = await config.get_active_caption_id(7)
+    await config.set_caption_fields(7, cid7, next_ep=12)
+    bot.log.clear()
+    await send(7, message(7, 30, "one-piece-saison1-vf-ep01.mp4", video=True))
+    await settle()
+    s = summaries(7)[-1]
+    check("counter 12, file « …-ep01 »: the summary explains Episode 1 (counter was at 12), next stays 12",
+          "Episode 1 was read from the file name (your counter was at 12)" in s and ": 12" in s, s)
+    bot.log.clear()
+    await send(7, message(7, 31, "clip without number.mp4", video=True))
+    await settle()
+    check("… a file without a number: no such line, no button",
+          "read from the file" not in summaries(7)[-1] and bot.markups[-1] is None, summaries(7)[-1])
+    answers = []
+    cq = SimpleNamespace(from_user=SimpleNamespace(id=7), message=Sent(),
+                         answer=lambda *a, **k: _rec_answer(answers, *a, **k))
+    cq.message.edit_reply_markup = lambda **k: _rec_answer(answers, "markup", **k)
+    await acb.settings_counter_only_cb(SimpleNamespace(callback_query=cq), ctx)
+    check("« Always use my counter »: the setting goes off, told, the button removed",
+          not (await config.get_user_tag_prefs(7))["ep_from_name"] and len(answers) == 2, str(answers))
+    await config.set_caption_fields(7, cid7, next_ep=9)
     await config.set_ep_from_name(7, False)
     bot.log.clear()
     await send(7, message(7, 23, "One_Piece - 20.mkv"))
@@ -287,6 +315,10 @@ async def main():
 
 async def _rec(uid, text, **kw):
     replies.append((uid, text, kw.get("parse_mode")))
+
+
+async def _rec_answer(into, *args, **kw):
+    into.append((args, kw))
 
 
 asyncio.run(main())

@@ -369,6 +369,17 @@ async def settings_toggle_epn_cb(update: Update, context: ContextTypes.DEFAULT_T
 							   parse_mode=H)
 
 
+async def settings_counter_only_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+	"""« 🔢 Always use my counter » under a summary: file names are no longer read (⚙️ Settings turns it back)."""
+	cq = update.callback_query
+	await set_ep_from_name(cq.from_user.id, False)
+	await cq.answer("🔢 Your counter only, from now on (⚙️ Settings to change it).", show_alert=True)
+	try:
+		await cq.message.edit_reply_markup(reply_markup=None)
+	except Exception:
+		pass
+
+
 TAG_WAIT = 300   # « Add/Edit Hashtag » waits this long for the hashtag; a text sent later is not one
 
 
@@ -658,7 +669,8 @@ async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
 		0
 	)
 	job = {"chat_id": msg.chat_id, "message_id": msg.message_id, "caption": caption, "cid": cid, "ep": ep,
-		   "size": file_size, "kind": "copy"}
+		   "size": file_size, "kind": "copy",
+		   "counter": counter if named and named != counter else None}   # the file name won over the counter
 	if msg.document:
 		job["final_name"] = await build_final_filename(user_id, msg.document.file_name or "file")
 		job["kind"] = "small" if file_size <= SMALL_LIMIT else "big"
@@ -689,7 +701,7 @@ async def _worker(user_id: int, q: asyncio.Queue, bot) -> None:
 		job = q.get_nowait()
 		try:
 			note = await _send(job, bot)
-			_DONE.setdefault(user_id, []).append((job["cid"], job["ep"], note))
+			_DONE.setdefault(user_id, []).append((job["cid"], job["ep"], note, job.get("counter")))
 			await update_stats(files_delta=1, bytes_delta=job["size"] or 0)
 		except Exception as e:
 			try:
@@ -758,18 +770,27 @@ async def _summary_after(user_id: int, bot) -> None:
 	if len(done) == 1:
 		lines.append("✅ Caption added.")
 	else:
-		eps = [ep for _, ep, _ in done]
+		eps = [d[1] for d in done]
 		lines.append(f"✅ {len(done)} captions added (episodes {min(eps)} → {max(eps)}).")
-	for cid in dict.fromkeys(c for c, _, _ in done):
+	for cid in dict.fromkeys(d[0] for d in done):
 		cap = await get_caption(user_id, cid)
 		if cap:
 			lines.append(f"➡️ Next episode{(' of ' + esc(cap['name'])) if len(done) > 1 else ''}: {cap.get('next_ep', 1)}")
-	notes = [n for _, _, n in done if n]
+	notes = [d[2] for d in done if d[2]]
 	if notes:
 		lines.append(f"ℹ️ {len(notes)} file(s): {esc(notes[0])}.")
+	# The number in a file name goes before the counter: say so when they differ (a file named "…-ep01"
+	# captioned Episode 1 while the counter is at 12 looks like a mistake otherwise)
+	named = [(d[1], d[3]) for d in done if d[3]]
+	markup = None
+	if named:
+		lines.append(f"🔢 Episode {named[0][0]} was read from the file name (your counter was at {named[0][1]})."
+					 if len(named) == 1 else
+					 f"🔢 {len(named)} episode numbers were read from the file names, not from your counter.")
+		markup = InlineKeyboardMarkup([[btn("🔢 Always use my counter", "set:epn0", style="primary")]])
 	lines.append("\n🙏 Please share this bot with your friends.")
 	try:
-		await bot.send_message(user_id, "\n".join(lines), parse_mode=H)
+		await bot.send_message(user_id, "\n".join(lines), parse_mode=H, reply_markup=markup)
 	except Exception:
 		pass
 
@@ -1028,6 +1049,7 @@ def build_application() -> Application:
 	application.add_handler(CallbackQueryHandler(settings_home_cb, pattern=r"^set:home$"))
 	application.add_handler(CallbackQueryHandler(settings_toggle_pos_cb, pattern=r"^set:pos$"))
 	application.add_handler(CallbackQueryHandler(settings_toggle_epn_cb, pattern=r"^set:epn$"))
+	application.add_handler(CallbackQueryHandler(settings_counter_only_cb, pattern=r"^set:epn0$"))
 	application.add_handler(CallbackQueryHandler(settings_remove_hashtag_cb, pattern=r"^set:rm$"))
 	# ❌ Cancel of the hashtag request after a restart (the conversation, in memory, is gone)
 	application.add_handler(CallbackQueryHandler(settings_cancel_hashtag_cb, pattern=r"^set:tagcancel$"))
